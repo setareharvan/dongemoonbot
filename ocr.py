@@ -1,4 +1,4 @@
-"""خواندن عکس فیش با Gemini و برگرداندن آیتم‌ها به صورت ساخت‌یافته."""
+"""خواندن عکس فیش با Gemini + تلاش خودکار روی مدل‌های جایگزین هنگام شلوغی."""
 import base64
 import json
 import logging
@@ -48,6 +48,26 @@ SCHEMA = {
     "required": ["items"],
 }
 
+# اگر مدل اصلی شلوغ/در دسترس نبود، به ترتیب این‌ها امتحان می‌شوند
+FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+
+REQUEST_TIMEOUT = 15   # ثانیه برای هر درخواست
+TOTAL_BUDGET = 45      # حداکثر کل زمان خواندن (تا تلگرام منتظر نماند)
+
+
+def _models():
+    seen, out = set(), []
+    for m in [config.GEMINI_MODEL] + FALLBACK_MODELS:
+        m = (m or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
 
 def _clean_json(text):
     t = text.strip()
@@ -71,17 +91,15 @@ def _norm_amount(v):
 
 
 def read_receipt(image_bytes, mime="image/jpeg"):
-    """خروجی: {'ok': True, items, extra, discount, total, note} یا {'ok': False, 'error': پیام}"""
     if not config.GEMINI_API_KEY:
         return {"ok": False, "error": "کلید GEMINI_API_KEY تنظیم نشده است. فعلاً دستی وارد کن."}
     if len(image_bytes) > config.OCR_MAX_BYTES:
         return {"ok": False, "error": "عکس خیلی بزرگ است؛ به صورت «عکس» (نه فایل) بفرست."}
 
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{config.GEMINI_MODEL}:generateContent")
     payload = {
         "contents": [{"parts": [
-            {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
+            {"inline_data": {"mime_type": mime,
+                             "data": base64.b64encode(image_bytes).decode()}},
             {"text": PROMPT},
         ]}],
         "generationConfig": {
@@ -90,31 +108,60 @@ def read_receipt(image_bytes, mime="image/jpeg"):
             "responseSchema": SCHEMA,
         },
     }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": config.GEMINI_API_KEY}
+    headers = {"Content-Type": "application/json",
+               "x-goog-api-key": config.GEMINI_API_KEY}
 
+    deadline = time.monotonic() + TOTAL_BUDGET
+    last_code = None
     data = None
-    for attempt in range(2):
-        try:
-            r = requests.post(url, headers=headers, json=payload, timeout=config.OCR_TIMEOUT)
-        except requests.RequestException as e:
-            log.warning("OCR network error: %s", e)
-            if attempt == 0:
-                time.sleep(2)
-                continue
-            return {"ok": False, "error": "ارتباط با سرویس خواندن فیش برقرار نشد؛ دوباره امتحان کن."}
-        if r.status_code == 200:
-            data = r.json()
+
+    for model in _models():
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for attempt in range(2):
+            if time.monotonic() > deadline:
+                break
+            try:
+                r = requests.post(url, headers=headers,
+                                  json=payload, timeout=REQUEST_TIMEOUT)
+            except requests.RequestException as e:
+                log.warning("OCR network error (%s): %s", model, e)
+                last_code = None
+                if attempt == 0 and time.monotonic() + 2 < deadline:
+                    time.sleep(2)
+                    continue
+                break
+
+            last_code = r.status_code
+            if r.status_code == 200:
+                data = r.json()
+                break
+            if r.status_code in (400, 401, 403):
+                log.error("OCR auth error %s: %s", r.status_code, r.text[:300])
+                return {"ok": False, "error": f"کلید Gemini نامعتبر است (کد {r.status_code})؛ GEMINI_API_KEY را در Render بررسی کن."}
+            if r.status_code == 404:
+                log.warning("OCR model not found: %s", model)
+                break  # مدل بعدی
+            if r.status_code == 429:
+                log.warning("OCR quota on %s", model)
+                break  # سهمیهٔ این مدل پر شده؛ مدل بعدی
+            if r.status_code >= 500:
+                log.warning("OCR busy %s on %s", r.status_code, model)
+                if attempt == 0 and time.monotonic() + 3 < deadline:
+                    time.sleep(3)
+                    continue
+                break  # مدل بعدی
             break
-        if r.status_code == 429:
-            return {"ok": False, "error": "سهمیهٔ رایگان امروز تمام شده 😅 بعداً امتحان کن یا دستی وارد کن."}
-        if r.status_code in (400, 401, 403):
-            log.error("OCR auth error %s: %s", r.status_code, r.text[:300])
-            return {"ok": False, "error": "کلید Gemini نامعتبر است؛ GEMINI_API_KEY را بررسی کن."}
-        if attempt == 0 and r.status_code >= 500:
-            time.sleep(2)
-            continue
-        log.error("OCR error %s: %s", r.status_code, r.text[:300])
-        return {"ok": False, "error": "سرویس خواندن فیش خطا داد؛ کمی بعد دوباره بفرست."}
+        if data is not None:
+            break
+
+    if data is None:
+        if last_code == 429:
+            return {"ok": False, "error": "سهمیهٔ رایگان امروز تمام شده 😅 فردا ریست می‌شود؛ فعلاً 💰 دستی وارد کن."}
+        if last_code in (500, 503):
+            return {"ok": False, "error": "سرویس گوگل الان شلوغ است (503). چند دقیقه بعد دوباره بفرست یا 💰 دستی وارد کن."}
+        if last_code == 404:
+            return {"ok": False, "error": "مدل پیدا نشد (404). در Render مقدار GEMINI_MODEL را روی gemini-flash-latest بگذار."}
+        return {"ok": False, "error": "سرویس خواندن فیش جواب نداد؛ کمی بعد دوباره بفرست."}
 
     try:
         parts = data["candidates"][0]["content"]["parts"]
@@ -130,7 +177,8 @@ def read_receipt(image_bytes, mime="image/jpeg"):
         price = _norm_amount(it.get("price"))
         if not name or price <= 0:
             continue
-        items.append({"id": new_id(), "name": name, "price": price, "owners": []})
+        items.append({"id": new_id(), "name": name,
+                     "price": price, "owners": []})
 
     if not items:
         return {"ok": False, "error": "هیچ آیتمی روی فیش نخواندم؛ عکس واضح‌تر بفرست یا دستی وارد کن."}
