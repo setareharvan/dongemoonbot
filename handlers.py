@@ -1,4 +1,5 @@
 import re
+import copy
 import time
 import logging
 import functools
@@ -24,6 +25,7 @@ WELCOME = (
     "۲) 💰 ثبت هزینه → دستی\n"
     "   📸 فیش با عکس → عکس فیش را بفرست، خودم آیتم‌ها را می‌خوانم!\n"
     "۳) 📊 محاسبه دنگ → گزارش کامل + کمترین تراکنش تسویه\n\n"
+    "✏️ هر هزینه را بعداً از 📋 وضعیت می‌توانی ویرایش یا حذف کنی.\n"
     "✨ عدد فارسی، «۳۰۰ هزار» و «۹٪» هم قبول می‌شود. هرجا گیر کردی ❌ لغو."
 )
 ITEM_ASK = (
@@ -132,10 +134,18 @@ def next_unowned(ex, start=0):
     return None
 
 
+def ready_for_summary(ex):
+    """آیا همه‌چیز کامل است و می‌توانیم مستقیم به پیش‌نمایش برویم؟"""
+    return (bool(ex.get("payer"))
+            and bool(ex.get("items"))
+            and all(it.get("owners") for it in ex["items"])
+            and (ex.get("extra_confirmed") or ex.get("id")))
+
+
 def extra_ask(suggest=None):
     t = EXTRA_ASK
     if suggest:
-        t += f"\n\n🔎 از فیش خواندم: <b>{money(suggest)}</b> — اگر درست است همین را بفرست."
+        t += f"\n\n🔎 مقدار فعلی/خوانده‌شده: <b>{money(suggest)}</b> — اگر درست است همین را بفرست."
     return t
 
 
@@ -153,50 +163,59 @@ def owners_text(name, price):
 
 
 def review_text(s, ex, ocr_total=None, note=""):
-    lines = ["🧾 <b>این‌ها را از فیش خواندم:</b>", ""]
+    lines = ["🧾 <b>بازبینی آیتم‌های فیش:</b>", ""]
     for i, it in enumerate(ex["items"], 1):
         lines.append(f"{i}) {esc(it['name'])} — <b>{money(it['price'])}</b>")
     sub = subtotal_of(ex)
     lines += ["", f"🧮 جمع آیتم‌ها: <b>{money(sub)}</b> {config.CURRENCY}"]
     if ex.get("extra"):
-        lines.append(f"➕ مالیات/سرویس خوانده‌شده: {money(ex['extra'])}")
+        lines.append(f"➕ مالیات/سرویس: {money(ex['extra'])}")
     if ex.get("discount"):
-        lines.append(f"➖ تخفیف خوانده‌شده: {money(ex['discount'])}")
+        lines.append(f"➖ تخفیف: {money(ex['discount'])}")
     if ocr_total:
         lines.append(f"🖨 مبلغ کل روی فیش: {money(ocr_total)}")
         expected = sub + ex.get("extra", 0) - ex.get("discount", 0)
         if abs(ocr_total - expected) > max(1000, ocr_total * 0.02):
-            lines.append("⚠️ جمع آیتم‌ها با مبلغ کل فیش نمی‌خواند؛ احتمالاً چیزی جا افتاده. با 🗑 حذف و ➕ افزودن اصلاح کن.")
+            lines.append(
+                "⚠️ جمع آیتم‌ها با مبلغ کل فیش نمی‌خواند؛ با 🗑 و ➕ اصلاح کن.")
     if note:
         lines += ["", note]
-    lines += ["", "اگر ردیفی اشتباه است با 🗑 حذفش کن و با ➕ درستش را اضافه کن."]
+    lines += ["", "ردیف اشتباه را 🗑 حذف کن و درستش را ➕ اضافه کن."]
     return "\n".join(lines)
 
 
 def summary_text(s, ex):
     names = names_of(s)
-    lines = ["🧾 <b>پیش‌نمایش فیش</b>", f"👤 پرداخت‌کننده: <b>{esc(names.get(ex['payer'], '؟'))}</b>", ""]
+    lines = ["🧾 <b>پیش‌نمایش فیش</b>",
+             f"👤 پرداخت‌کننده: <b>{esc(names.get(ex['payer'], '؟'))}</b>", ""]
     if ex["mode"] == "equal":
         lines.append(f"⚖️ تقسیم مساوی بین {len(ex.get('members', []))} نفر")
     else:
         for it in ex["items"]:
-            who = "، ".join(esc(names.get(o, "؟")) for o in it.get("owners", []))
+            who = "، ".join(esc(names.get(o, "؟"))
+                            for o in it.get("owners", []))
             lines.append(f"• {esc(it['name'])}: {money(it['price'])} ← {who}")
     lines += ["", f"🧮 جمع آیتم‌ها: <b>{money(subtotal_of(ex))}</b>"]
     if ex.get("extra"):
         lines.append(f"➕ مالیات/سرویس: {money(ex['extra'])}")
     if ex.get("discount"):
         lines.append(f"➖ تخفیف: {money(ex['discount'])}")
-    lines.append(f"💵 <b>مبلغ نهایی: {money(total_of(ex))} {config.CURRENCY}</b>")
+    lines.append(
+        f"💵 <b>مبلغ نهایی: {money(total_of(ex))} {config.CURRENCY}</b>")
+    if ex.get("id"):
+        lines.append(
+            "\n✏️ در حال ویرایش هزینهٔ ذخیره‌شده؛ با ✅ ثبت نهایی جایگزین می‌شود.")
     return "\n".join(lines)
 
 
-def saved_text(s, ex):
-    return (f"✅ <b>هزینه ثبت شد</b>\n"
+def saved_text(s, ex, updated=False):
+    head = "✅ <b>هزینه ویرایش شد</b>" if updated else "✅ <b>هزینه ثبت شد</b>"
+    return (f"{head}\n"
             f"👤 {esc(names_of(s).get(ex['payer'], '؟'))} | "
             f"💵 {money(total_of(ex))} {config.CURRENCY}\n"
             f"📌 تعداد هزینه‌ها: {len(s['expenses'])}\n\n"
-            f"➕ هزینهٔ بعدی: 💰 ثبت هزینه یا 📸 فیش با عکس\n📊 تسویه: محاسبه دنگ")
+            f"➕ هزینهٔ بعدی: 💰 ثبت هزینه یا 📸 فیش با عکس\n"
+            f"✏️ ویرایش/حذف: 📋 وضعیت\n📊 تسویه: محاسبه دنگ")
 
 
 def status_text(s):
@@ -207,7 +226,7 @@ def status_text(s):
     for i, ex in enumerate(s["expenses"], 1):
         kind = "مساوی" if ex["mode"] == "equal" else f"{len(ex['items'])} آیتم"
         msg += f"{i}. {esc(names.get(ex['payer'], '؟'))} | {kind} | <b>{money(total_of(ex))}</b>\n"
-    msg += "\nبرای حذف هر هزینه روی دکمه‌اش بزن 👇"
+    msg += "\n✏️ = ویرایش | 🗑 = حذف"
     return msg
 
 
@@ -224,7 +243,8 @@ def report_text(s):
     for m in s["members"]:
         i, n = m["id"], net[m["id"]]
         tag = "🟢 طلبکار" if n > 0 else ("🔴 بدهکار" if n < 0 else "⚪️ تسویه")
-        lines.append(f"• {esc(m['name'])}: پرداخت {money(paid[i])} | سهم {money(share[i])} | {tag} {money(abs(n))}")
+        lines.append(
+            f"• {esc(m['name'])}: پرداخت {money(paid[i])} | سهم {money(share[i])} | {tag} {money(abs(n))}")
     lines.append("")
     tr = settle(net)
     if not tr:
@@ -232,15 +252,27 @@ def report_text(s):
     else:
         lines.append("🔁 <b>کمترین تراکنش‌های لازم:</b>")
         for k, (d, c, a) in enumerate(tr, 1):
-            lines.append(f"{k}) {esc(names[d])} ⬅️ <b>{money(a)}</b> ➡️ {esc(names[c])}")
+            lines.append(
+                f"{k}) {esc(names[d])} ⬅️ <b>{money(a)}</b> ➡️ {esc(names[c])}")
     return "\n".join(lines)
 
 
 def finalize(s, ex):
-    ex["id"] = new_id()
-    ex["ts"] = time.time()
-    s["expenses"].append(ex)
+    """اگر id داشته باشد جایگزین هزینهٔ قبلی می‌شود، وگرنه ثبت جدید."""
+    updated = False
+    if ex.get("id"):
+        for i, e in enumerate(s["expenses"]):
+            if e["id"] == ex["id"]:
+                ex["ts"] = time.time()
+                s["expenses"][i] = ex
+                updated = True
+                break
+    if not updated:
+        ex["id"] = new_id()
+        ex["ts"] = time.time()
+        s["expenses"].append(ex)
     s["state"] = None
+    return updated
 
 
 def ask_owner(s, cid, ex, idx, mid=None):
@@ -266,8 +298,10 @@ def after_extra(s, cid, ex):
 
 
 def start_owners(s, cid, st, name, price):
-    set_state(s, "owners", ex=st["ex"], cur={"name": name[:40], "price": price}, sel=[])
-    send(cid, owners_text(name, price), kb.select_kb(s["members"], [], "ow", "owall", "owok"))
+    set_state(s, "owners", ex=st["ex"], cur={
+              "name": name[:40], "price": price}, sel=[])
+    send(cid, owners_text(name, price), kb.select_kb(
+        s["members"], [], "ow", "owall", "owok"))
 
 
 # ---------- هندلرها ----------
@@ -309,7 +343,8 @@ def on_text(m):
                 send(cid, "⚠️ اول از 👥 اعضا حداقل یک نفر اضافه کن.", kb.main_menu())
                 return
             s["state"] = None
-            send(cid, "💸 چه کسی این هزینه را پرداخت کرده؟", kb.payer_kb(s["members"]))
+            send(cid, "💸 چه کسی این هزینه را پرداخت کرده؟",
+                 kb.payer_kb(s["members"]))
             return
         if text == kb.BTN_PHOTO:
             if not s["members"]:
@@ -345,10 +380,12 @@ def on_text(m):
                 s["members"].append({"id": new_id(), "name": n})
                 added.append(n)
             s["state"] = None
-            msg = ("✅ اضافه شد: " + "، ".join(esc(a) for a in added)) if added else "چیزی اضافه نشد."
+            msg = ("✅ اضافه شد: " + "، ".join(esc(a)
+                   for a in added)) if added else "چیزی اضافه نشد."
             if dup:
                 msg += "\n⚠️ تکراری: " + "، ".join(esc(d) for d in dup)
-            send(cid, msg + "\n\n" + members_text(s), kb.members_kb(s["members"]))
+            send(cid, msg + "\n\n" + members_text(s),
+                 kb.members_kb(s["members"]))
             return
 
         if step == "eq_amount":
@@ -359,26 +396,34 @@ def on_text(m):
             ex = st["ex"]
             ex["amount"] = amt
             ids = [m["id"] for m in s["members"]]
-            set_state(s, "eq_members", ex=ex, sel=list(ids))
+            sel = ex.get("members") or ids
+            set_state(s, "eq_members", ex=ex, sel=list(sel))
             send(cid, f"💰 مبلغ: <b>{money(amt)}</b>\nبین چه کسانی تقسیم شود؟",
-                 kb.select_kb(s["members"], ids, "eq", "eqall", "eqok"))
+                 kb.select_kb(s["members"], sel, "eq", "eqall", "eqok"))
             return
 
         if step == "item":
             if text.lower() in DONE:
-                if not st["ex"]["items"]:
+                ex = st["ex"]
+                if not ex["items"]:
                     send(cid, "⚠️ هنوز آیتمی ثبت نشده. نام و قیمت اولین آیتم را بفرست.")
                     return
-                set_state(s, "extra", ex=st["ex"])
-                send(cid, extra_ask(), kb.cancel_ikb())
+                if ready_for_summary(ex):
+                    set_state(s, "summary", ex=ex)
+                    send(cid, summary_text(s, ex), kb.summary_kb())
+                else:
+                    set_state(s, "extra", ex=ex)
+                    send(cid, extra_ask(ex.get("extra")), kb.cancel_ikb())
                 return
             name, price = split_item(text)
             if not name:
                 send(cid, "❌ نام آیتم خالی است.")
                 return
             if price is None:
-                set_state(s, "item_price", ex=st["ex"], cur={"name": name[:40]})
-                send(cid, f"💵 قیمت <b>{esc(name)}</b> چقدر است؟", kb.cancel_ikb())
+                set_state(s, "item_price", ex=st["ex"], cur={
+                          "name": name[:40]})
+                send(
+                    cid, f"💵 قیمت <b>{esc(name)}</b> چقدر است؟", kb.cancel_ikb())
                 return
             start_owners(s, cid, st, name, price)
             return
@@ -405,6 +450,7 @@ def on_text(m):
                 return
             ex = st["ex"]
             ex["extra"] = extra
+            ex["extra_confirmed"] = True
             after_extra(s, cid, ex)
             return
 
@@ -421,8 +467,9 @@ def on_text(m):
 
         if step == "summary":
             if text.lower() in ("ثبت", "تایید", "ok", "بله"):
-                finalize(s, st["ex"])
-                send(cid, saved_text(s, s["expenses"][-1]), kb.main_menu())
+                updated = finalize(s, st["ex"])
+                send(cid, saved_text(
+                    s, s["expenses"][-1] if not updated else st["ex"], updated), kb.main_menu())
             else:
                 send(cid, "از دکمه‌های زیر پیام استفاده کن 👇", kb.summary_kb())
             return
@@ -443,7 +490,8 @@ def on_photo(m):
         if m.content_type == "document":
             mime = m.document.mime_type or ""
             if not mime.startswith("image/"):
-                send(cid, "این فایل عکس نیست 🙂 فیش را به صورت «عکس» بفرست.", kb.main_menu())
+                send(cid, "این فایل عکس نیست 🙂 فیش را به صورت «عکس» بفرست.",
+                     kb.main_menu())
                 return
             file_id = m.document.file_id
         else:
@@ -475,19 +523,22 @@ def on_photo(m):
             return
 
         ex = None
-        if st and st.get("ex") and st["step"] in ("item", "item_price", "owners", "extra", "summary", "mode"):
+        if st and st.get("ex") and st["step"] in ("item", "item_price", "owners", "extra", "summary", "mode", "ocr_review"):
             ex = st["ex"]
             ex["mode"] = "items"
             ex["items"] = (ex.get("items") or []) + res["items"]
         if ex is None:
-            ex = {"mode": "items", "payer": None, "items": res["items"], "extra": 0, "discount": 0}
+            ex = {"mode": "items", "payer": None,
+                  "items": res["items"], "extra": 0, "discount": 0}
         if res["extra"]:
             ex["extra"] = res["extra"]
         if res["discount"]:
             ex["discount"] = res["discount"]
 
-        set_state(s, "ocr_review", ex=ex, ocr_total=res["total"], note=res["note"])
-        send(cid, review_text(s, ex, res["total"], res["note"]), kb.ocr_review_kb(ex["items"]))
+        set_state(s, "ocr_review", ex=ex,
+                  ocr_total=res["total"], note=res["note"])
+        send(cid, review_text(
+            s, ex, res["total"], res["note"]), kb.ocr_review_kb(ex["items"]))
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -508,7 +559,8 @@ def on_cb(c):
         if d == "add":
             set_state(s, "m_add")
             answer(c.id)
-            edit(cid, mid, "✍️ نام عضو را بفرست.\nچند نفر یکجا: <b>علی، رضا، سارا</b>", kb.cancel_ikb())
+            edit(
+                cid, mid, "✍️ نام عضو را بفرست.\nچند نفر یکجا: <b>علی، رضا، سارا</b>", kb.cancel_ikb())
             return
         if d.startswith("del:"):
             uid = d[4:]
@@ -517,7 +569,8 @@ def on_cb(c):
                        or any(uid in it.get("owners", []) for it in ex.get("items", []))
                        for ex in s["expenses"])
             if used:
-                answer(c.id, "این عضو در هزینه‌ها ثبت شده؛ اول هزینه‌هایش را از 📋 وضعیت حذف کن.", True)
+                answer(
+                    c.id, "این عضو در هزینه‌ها ثبت شده؛ اول هزینه‌هایش را از 📋 وضعیت حذف کن.", True)
                 return
             s["members"] = [m for m in s["members"] if m["id"] != uid]
             answer(c.id, "حذف شد 🗑")
@@ -535,23 +588,57 @@ def on_cb(c):
             answer(c.id, "حذف شد 🗑" if len(s["expenses"]) < n else "پیدا نشد")
             edit(cid, mid, status_text(s), kb.expenses_kb(s))
             return
+
+        # --- ویرایش هزینهٔ ذخیره‌شده ---
+        if d.startswith("ed:"):
+            eid = d[3:]
+            found = next((e for e in s["expenses"] if e["id"] == eid), None)
+            if not found:
+                answer(c.id, "این هزینه پیدا نشد.", True)
+                return
+            ex = copy.deepcopy(found)
+            answer(c.id)
+            if ex["mode"] == "equal":
+                set_state(s, "eq_amount", ex=ex)
+                edit(cid, mid, f"✏️ ویرایش هزینهٔ مساوی\n💰 مبلغ جدید را بفرست (قبلی: <b>{money(ex.get('amount', 0))}</b>).",
+                     kb.cancel_ikb())
+            else:
+                set_state(s, "ocr_review", ex=ex, ocr_total=None,
+                          note="✏️ در حال ویرایش هزینهٔ ذخیره‌شده؛ تا ✅ ثبت نهایی چیزی عوض نمی‌شود.")
+                edit(cid, mid, review_text(s, ex, None, "✏️ در حال ویرایش هزینهٔ ذخیره‌شده."),
+                     kb.ocr_review_kb(ex["items"]))
+            return
+
         if d.startswith("pay:"):
             pid = d[4:]
             if pid not in names_of(s):
                 answer(c.id, "عضو یافت نشد", True)
                 return
+            if st and st["step"] == "edit_payer":
+                ex = st["ex"]
+                ex["payer"] = pid
+                set_state(s, "summary", ex=ex)
+                answer(c.id)
+                edit(cid, mid, summary_text(s, ex), kb.summary_kb())
+                return
             if st and st["step"] == "ocr_payer":
                 ex = st["ex"]
                 ex["payer"] = pid
-                set_state(s, "extra", ex=ex)
                 answer(c.id)
-                edit(cid, mid, f"👤 پرداخت‌کننده: <b>{esc(names_of(s)[pid])}</b>\n\n" + extra_ask(ex.get("extra")),
-                     kb.cancel_ikb())
+                if ready_for_summary(ex):
+                    set_state(s, "summary", ex=ex)
+                    edit(cid, mid, summary_text(s, ex), kb.summary_kb())
+                else:
+                    set_state(s, "extra", ex=ex)
+                    edit(cid, mid, f"👤 پرداخت‌کننده: <b>{esc(names_of(s)[pid])}</b>\n\n" + extra_ask(ex.get("extra")),
+                         kb.cancel_ikb())
                 return
-            ex = {"mode": None, "payer": pid, "items": [], "extra": 0, "discount": 0}
+            ex = {"mode": None, "payer": pid,
+                  "items": [], "extra": 0, "discount": 0}
             set_state(s, "mode", ex=ex)
             answer(c.id)
-            edit(cid, mid, f"👤 پرداخت‌کننده: <b>{esc(names_of(s)[pid])}</b>\n\nنوع هزینه را انتخاب کن:", kb.mode_kb())
+            edit(
+                cid, mid, f"👤 پرداخت‌کننده: <b>{esc(names_of(s)[pid])}</b>\n\nنوع هزینه را انتخاب کن:", kb.mode_kb())
             return
         if d in ("md:i", "md:e"):
             if not st or st["step"] != "mode":
@@ -561,23 +648,41 @@ def on_cb(c):
             if d == "md:i":
                 ex["mode"] = "items"
                 set_state(s, "item", ex=ex)
-                edit(cid, mid, ITEM_ASK, kb.cancel_ikb())
+                edit(cid, mid, ITEM_ASK, kb.next_kb())
             else:
                 ex["mode"] = "equal"
                 set_state(s, "eq_amount", ex=ex)
-                edit(cid, mid, "💰 مبلغ کل را بفرست (مثلاً 450000 یا ۴۵۰ هزار).", kb.cancel_ikb())
+                edit(
+                    cid, mid, "💰 مبلغ کل را بفرست (مثلاً 450000 یا ۴۵۰ هزار).", kb.cancel_ikb())
             answer(c.id)
             return
         if d == "fin":
             if not st or st["step"] != "item" or not st["ex"]["items"]:
                 answer(c.id, "اول حداقل یک آیتم را ثبت کن.", True)
                 return
-            set_state(s, "extra", ex=st["ex"])
+            ex = st["ex"]
             answer(c.id)
-            edit(cid, mid, extra_ask(), kb.cancel_ikb())
+            if ready_for_summary(ex):
+                set_state(s, "summary", ex=ex)
+                edit(cid, mid, summary_text(s, ex), kb.summary_kb())
+            else:
+                set_state(s, "extra", ex=ex)
+                edit(cid, mid, extra_ask(ex.get("extra")), kb.cancel_ikb())
+            return
+        if d == "rev":
+            if not st or st["step"] != "item":
+                answer(c.id, "این دکمه منقضی شده.", True)
+                return
+            ex = st["ex"]
+            if not ex["items"]:
+                answer(c.id, "هنوز آیتمی ثبت نشده.", True)
+                return
+            set_state(s, "ocr_review", ex=ex, ocr_total=None, note="")
+            answer(c.id)
+            edit(cid, mid, review_text(s, ex), kb.ocr_review_kb(ex["items"]))
             return
 
-        # --- بازبینی فیش خوانده‌شده از عکس ---
+        # --- بازبینی فیش (عکس یا ویرایش) ---
         if d in ("ocr:ok", "ocr:add") or d.startswith("ocr:rm:"):
             if not st or st["step"] != "ocr_review":
                 answer(c.id, "این دکمه منقضی شده؛ از منو شروع کن.", True)
@@ -586,14 +691,14 @@ def on_cb(c):
             if d.startswith("ocr:rm:"):
                 iid = d[7:]
                 ex["items"] = [it for it in ex["items"] if it.get("id") != iid]
-                if not ex["items"]:
-                    set_state(s, "photo_wait")
-                    answer(c.id, "همه حذف شدند")
-                    edit(cid, mid, "🗑 همهٔ آیتم‌ها حذف شدند.\n📸 عکس واضح‌تر بفرست یا 💰 ثبت هزینه را بزن.", kb.cancel_ikb())
-                    return
                 st["ts"] = time.time()
                 answer(c.id, "حذف شد 🗑")
-                edit(cid, mid, review_text(s, ex, st.get("ocr_total"), st.get("note", "")), kb.ocr_review_kb(ex["items"]))
+                if not ex["items"]:
+                    edit(cid, mid, "🗑 همهٔ آیتم‌ها حذف شدند.\n➕ آیتم اضافه کن یا ❌ لغو را بزن.",
+                         kb.ocr_review_kb(ex["items"]))
+                else:
+                    edit(cid, mid, review_text(s, ex, st.get("ocr_total"), st.get("note", "")),
+                         kb.ocr_review_kb(ex["items"]))
                 return
             if d == "ocr:add":
                 set_state(s, "item", ex=ex)
@@ -601,16 +706,19 @@ def on_cb(c):
                 edit(cid, mid, "✍️ نام و قیمت آیتم را بفرست (مثلاً «نوشابه 45000»).\nآیتم‌های قبلی حفظ شدند.\nوقتی تمام شد <b>تمام</b> را بفرست.", kb.next_kb())
                 return
             if not ex["items"]:
-                answer(c.id, "آیتمی نمانده!", True)
+                answer(c.id, "آیتمی نمانده! ➕ اضافه کن.", True)
                 return
-            if ex.get("payer"):
+            answer(c.id)
+            if ready_for_summary(ex):
+                set_state(s, "summary", ex=ex)
+                edit(cid, mid, summary_text(s, ex), kb.summary_kb())
+            elif ex.get("payer"):
                 set_state(s, "extra", ex=ex)
-                answer(c.id)
                 edit(cid, mid, extra_ask(ex.get("extra")), kb.cancel_ikb())
             else:
                 set_state(s, "ocr_payer", ex=ex)
-                answer(c.id)
-                edit(cid, mid, "💸 چه کسی این فیش را پرداخت کرده؟", kb.payer_kb(s["members"]))
+                edit(cid, mid, "💸 چه کسی این فیش را پرداخت کرده؟",
+                     kb.payer_kb(s["members"]))
             return
 
         if d == "ooskip":
@@ -627,7 +735,7 @@ def on_cb(c):
             edit(cid, mid, summary_text(s, ex), kb.summary_kb())
             return
 
-        # --- انتخاب افراد: ow (آیتم دستی) / eq (مساوی) / oo (آیتم‌های عکس) ---
+        # --- انتخاب افراد: ow / eq / oo ---
         for prefix, step, ok in (("ow", "owners", "owok"), ("eq", "eq_members", "eqok"), ("oo", "ocr_owners", "oook")):
             if d.startswith(prefix + ":") or d in (prefix + "all", ok):
                 if not st or st["step"] != step:
@@ -637,20 +745,18 @@ def on_cb(c):
                 if d.startswith(prefix + ":"):
                     toggle(st["sel"], d[len(prefix) + 1:])
                     st["ts"] = time.time()
-                    if prefix == "oo":
-                        markup = kb.ocr_owner_kb(s["members"], st["sel"])
-                    else:
-                        markup = kb.select_kb(s["members"], st["sel"], prefix, prefix + "all", ok)
+                    markup = kb.ocr_owner_kb(s["members"], st["sel"]) if prefix == "oo" else \
+                        kb.select_kb(s["members"], st["sel"],
+                                     prefix, prefix + "all", ok)
                     edit_kb(cid, mid, markup)
                     answer(c.id)
                     return
                 if d == prefix + "all":
                     st["sel"] = [] if len(st["sel"]) == len(ids) else list(ids)
                     st["ts"] = time.time()
-                    if prefix == "oo":
-                        markup = kb.ocr_owner_kb(s["members"], st["sel"])
-                    else:
-                        markup = kb.select_kb(s["members"], st["sel"], prefix, prefix + "all", ok)
+                    markup = kb.ocr_owner_kb(s["members"], st["sel"]) if prefix == "oo" else \
+                        kb.select_kb(s["members"], st["sel"],
+                                     prefix, prefix + "all", ok)
                     edit_kb(cid, mid, markup)
                     answer(c.id)
                     return
@@ -663,7 +769,8 @@ def on_cb(c):
                                         "price": st["cur"]["price"], "owners": list(st["sel"])})
                     set_state(s, "item", ex=ex)
                     answer(c.id, "ثبت شد ✅")
-                    edit(cid, mid, f"✅ <b>{esc(st['cur']['name'])}</b> ثبت شد.\n\n➕ آیتم بعدی را بفرست (نام + قیمت)\nیا 🧾 پایان را بزن.", kb.next_kb())
+                    edit(
+                        cid, mid, f"✅ <b>{esc(st['cur']['name'])}</b> ثبت شد.\n\n➕ آیتم بعدی را بفرست (نام + قیمت)\nیا 🧾 پایان را بزن.", kb.next_kb())
                 elif prefix == "oo":
                     idx = st["idx"]
                     ex["items"][idx]["owners"] = list(st["sel"])
@@ -676,24 +783,39 @@ def on_cb(c):
                         ask_owner(s, cid, ex, nxt, mid=mid)
                 else:
                     ex["members"] = list(st["sel"])
-                    finalize(s, ex)
+                    updated = finalize(s, ex)
                     answer(c.id, "ثبت شد ✅")
-                    edit(cid, mid, saved_text(s, ex))
+                    edit(cid, mid, saved_text(s, ex, updated))
                 return
 
-        if d in ("s:ok", "s:disc"):
+        # --- دکمه‌های پیش‌نمایش ---
+        if d in ("s:ok", "s:disc", "s:edit", "s:payer", "s:extra"):
             if not st or st["step"] != "summary":
                 answer(c.id, "این دکمه منقضی شده؛ از منو شروع کن.", True)
                 return
+            ex = st["ex"]
             if d == "s:ok":
-                ex = st["ex"]
-                finalize(s, ex)
+                updated = finalize(s, ex)
                 answer(c.id, "ثبت شد ✅")
-                edit(cid, mid, saved_text(s, ex))
-            else:
-                set_state(s, "discount", ex=st["ex"])
+                edit(cid, mid, saved_text(s, ex, updated))
+            elif d == "s:disc":
+                set_state(s, "discount", ex=ex)
                 answer(c.id)
                 edit(cid, mid, "🏷 مبلغ تخفیف را بفرست (مثلاً 50000).", kb.cancel_ikb())
+            elif d == "s:edit":
+                set_state(s, "ocr_review", ex=ex, ocr_total=None, note="")
+                answer(c.id)
+                edit(cid, mid, review_text(s, ex),
+                     kb.ocr_review_kb(ex["items"]))
+            elif d == "s:payer":
+                set_state(s, "edit_payer", ex=ex)
+                answer(c.id)
+                edit(cid, mid, "👤 پرداخت‌کنندهٔ جدید را انتخاب کن:",
+                     kb.payer_kb(s["members"]))
+            else:  # s:extra
+                set_state(s, "extra", ex=ex)
+                answer(c.id)
+                edit(cid, mid, extra_ask(ex.get("extra")), kb.cancel_ikb())
             return
 
         answer(c.id, "دکمه نامعتبر", True)

@@ -24,7 +24,8 @@ def main_menu():
 def ikb(rows):
     m = types.InlineKeyboardMarkup()
     for row in rows:
-        m.row(*[types.InlineKeyboardButton(t, callback_data=d) for t, d in row])
+        m.row(*[types.InlineKeyboardButton(t, callback_data=d)
+              for t, d in row])
     return m
 
 
@@ -33,7 +34,11 @@ def cancel_ikb():
 
 
 def next_kb():
-    return ikb([[("🧾 پایان ثبت آیتم‌ها", "fin")], [("❌ لغو", "x")]])
+    return ikb([
+        [("🧾 پایان ثبت آیتم‌ها", "fin")],
+        [("✏️ بازبینی / حذف آیتم‌ها", "rev")],
+        [("❌ لغو", "x")],
+    ])
 
 
 def mode_kb():
@@ -52,7 +57,8 @@ def payer_kb(members):
 
 
 def members_kb(members):
-    rows = [[(f"👤 {m['name']}", "noop"), ("🗑 حذف", f"del:{m['id']}")] for m in members]
+    rows = [[(f"👤 {m['name']}", "noop"), ("🗑 حذف", f"del:{m['id']}")]
+            for m in members]
     rows.append([("➕ افزودن عضو", "add")])
     return ikb(rows)
 
@@ -73,7 +79,8 @@ def select_kb(members, selected, prefix, all_cb, ok_cb):
 def ocr_review_kb(items):
     rows = []
     for i, it in enumerate(items, 1):
-        rows.append([(f"🗑 {i}. {it['name']} — {money(it['price'])}", f"ocr:rm:{it['id']}")])
+        rows.append(
+            [(f"🗑 {i}. {it['name']} — {money(it['price'])}", f"ocr:rm:{it['id']}")])
     rows.append([("➕ افزودن / اصلاح دستی", "ocr:add")])
     rows.append([("✅ درسته، ادامه", "ocr:ok"), ("❌ لغو", "x")])
     return ikb(rows)
@@ -81,12 +88,18 @@ def ocr_review_kb(items):
 
 def ocr_owner_kb(members, selected):
     m = select_kb(members, selected, "oo", "ooall", "oook")
-    m.row(types.InlineKeyboardButton("👥 همهٔ آیتم‌ها بین همه مساوی", callback_data="ooskip"))
+    m.row(types.InlineKeyboardButton(
+        "👥 همهٔ آیتم‌ها بین همه مساوی", callback_data="ooskip"))
     return m
 
 
 def summary_kb():
-    return ikb([[("✅ ثبت نهایی", "s:ok")], [("🏷 تخفیف", "s:disc"), ("❌ لغو", "x")]])
+    return ikb([
+        [("✅ ثبت نهایی", "s:ok")],
+        [("✏️ ویرایش آیتم‌ها", "s:edit"), ("👤 تغییر پرداخت‌کننده", "s:payer")],
+        [("🧾 مالیات/سرویس", "s:extra"), ("🏷 تخفیف", "s:disc")],
+        [("❌ لغو", "x")],
+    ])
 
 
 def reset_kb():
@@ -99,6 +112,6 @@ def expenses_kb(s):
     names = {m["id"]: m["name"] for m in s["members"]}
     rows = []
     for i, ex in enumerate(s["expenses"][-15:], 1):
-        label = f"🗑 {i}. {names.get(ex['payer'], '؟')} — {money(total_of(ex))}"
-        rows.append([(label, f"rm:{ex['id']}")])
+        label = f"✏️ {i}. {names.get(ex['payer'], '؟')} — {money(total_of(ex))}"
+        rows.append([(label, f"ed:{ex['id']}"), ("🗑", f"rm:{ex['id']}")])
     return ikb(rows)
