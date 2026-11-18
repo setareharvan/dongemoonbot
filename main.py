@@ -10,7 +10,7 @@ import telebot
 
 import config
 from bot_instance import bot
-import handlers  # noqa: F401  (ثبت هندلرها با import انجام می‌شود)
+import handlers  # noqa: F401
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -102,16 +102,6 @@ def webhook():
     return "", 200
 
 
-@app.get("/tginfo")
-def tginfo():
-    if request.args.get("key") != config.WEBHOOK_SECRET:
-        abort(403)
-    try:
-        return jsonify(bot.get_webhook_info().to_json())
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 200
-
-
 def setup_webhook():
     global WEBHOOK_RESULT
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", config.WEBHOOK_SECRET):
@@ -124,9 +114,12 @@ def setup_webhook():
         try:
             bot.remove_webhook()
             time.sleep(1)
-            bot.set_webhook(url=url, secret_token=config.WEBHOOK_SECRET,
-                            allowed_updates=["message", "callback_query"],
-                            drop_pending_updates=config.DROP_PENDING)
+            bot.set_webhook(
+                url=url,
+                secret_token=config.WEBHOOK_SECRET,
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=config.DROP_PENDING,
+            )
             WEBHOOK_RESULT = {"ok": True, "url": url}
             log.info("Webhook set: %s", url)
             return True

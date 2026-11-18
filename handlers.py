@@ -683,26 +683,11 @@ def on_cb(c):
             return
 
         # --- بازبینی فیش (عکس یا ویرایش) ---
-        if d in ("ocr:ok", "ocr:add", "ocr:x10", "ocr:d10") or d.startswith("ocr:rm:"):
+        if d in ("ocr:ok", "ocr:add") or d.startswith("ocr:rm:"):
             if not st or st["step"] != "ocr_review":
                 answer(c.id, "این دکمه منقضی شده؛ از منو شروع کن.", True)
                 return
             ex = st["ex"]
-            if d in ("ocr:x10", "ocr:d10"):
-                factor = 10 if d == "ocr:x10" else 0.1
-                for it in ex["items"]:
-                    it["price"] = max(1, int(round(it["price"] * factor)))
-                if ex.get("extra"):
-                    ex["extra"] = int(round(ex["extra"] * factor))
-                if ex.get("discount"):
-                    ex["discount"] = int(round(ex["discount"] * factor))
-                if st.get("ocr_total"):
-                    st["ocr_total"] = int(round(st["ocr_total"] * factor))
-                st["ts"] = time.time()
-                answer(c.id, "×۱۰ شد ✅" if d == "ocr:x10" else "÷۱۰ شد ✅")
-                edit(cid, mid, review_text(s, ex, st.get("ocr_total"), st.get("note", "")),
-                     kb.ocr_review_kb(ex["items"]))
-                return
             if d.startswith("ocr:rm:"):
                 iid = d[7:]
                 ex["items"] = [it for it in ex["items"] if it.get("id") != iid]

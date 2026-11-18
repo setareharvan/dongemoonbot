@@ -97,7 +97,8 @@ def read_receipt(image_bytes, mime="image/jpeg"):
 
     payload = {
         "contents": [{"parts": [
-            {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
+            {"inline_data": {"mime_type": mime,
+                             "data": base64.b64encode(image_bytes).decode()}},
             {"text": PROMPT},
         ]}],
         "generationConfig": {
@@ -106,7 +107,8 @@ def read_receipt(image_bytes, mime="image/jpeg"):
             "responseSchema": SCHEMA,
         },
     }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": config.GEMINI_API_KEY}
+    headers = {"Content-Type": "application/json",
+               "x-goog-api-key": config.GEMINI_API_KEY}
 
     deadline = time.monotonic() + TOTAL_BUDGET
     last_code = None
@@ -118,7 +120,8 @@ def read_receipt(image_bytes, mime="image/jpeg"):
             if time.monotonic() > deadline:
                 break
             try:
-                r = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+                r = requests.post(url, headers=headers,
+                                  json=payload, timeout=REQUEST_TIMEOUT)
             except requests.RequestException as e:
                 log.warning("OCR network error (%s): %s", model, e)
                 last_code = None
