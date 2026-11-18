@@ -5,9 +5,11 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN تنظیم نشده است (فایل .env یا Environment Variable در Render).")
+    raise RuntimeError(
+        "BOT_TOKEN تنظیم نشده است (فایل .env یا Environment Variable در Render).")
 
-WEBHOOK_BASE = (os.getenv("WEBHOOK_BASE") or os.getenv("RENDER_EXTERNAL_URL", "")).rstrip("/")
+WEBHOOK_BASE = (os.getenv("WEBHOOK_BASE") or os.getenv(
+    "RENDER_EXTERNAL_URL", "")).rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-secret")
 MODE = os.getenv("BOT_MODE", "webhook" if WEBHOOK_BASE else "polling").lower()

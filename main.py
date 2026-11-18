@@ -10,7 +10,7 @@ import telebot
 
 import config
 from bot_instance import bot
-import handlers  # noqa: F401
+import handlers  # noqa: F401  (ثبت هندلرها با import انجام می‌شود)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
