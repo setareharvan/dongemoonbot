@@ -17,11 +17,11 @@ PROMPT = """تو یک حسابدار دقیق هستی. این عکس یک فی�
 قواعد:
 - name: نام کالا/غذا، کوتاه و خوانا (حداکثر ۴۰ حرف). اگر تعداد بیشتر از ۱ است، «×2» را به نام اضافه کن.
 - qty: تعداد (اگر نامشخص بود 1).
-- price: مبلغ کل همان ردیف (تعداد × قیمت واحد)، عدد صحیح بدون جداکننده.
-- اگر مبالغ فیش به ریال است، همه را به تومان تبدیل کن (تقسیم بر ۱۰) و currency را "rial" بگذار؛ اگر تومان است "toman".
-- tax_and_service: مجموع مالیات + حق سرویس + هزینهٔ ارسال/پیک (تومان). اگر نبود 0.
-- discount: مجموع تخفیف‌ها (تومان، مثبت). اگر نبود 0.
-- total: مبلغ نهایی پرداختی که روی فیش چاپ شده (تومان). اگر پیدا نشد 0.
+- price: مبلغ کل همان ردیف (تعداد × قیمت واحد)، دقیقاً همان عددی که روی فیش چاپ شده، بدون هیچ تبدیل واحد.
+- tax_and_service: مجموع مالیات + حق سرویس + هزینهٔ ارسال/پیک، دقیقاً كما چاپ شده. اگر نبود 0.
+- discount: مجموع تخفیف‌ها (مثبت، كما چاپ شده). اگر نبود 0.
+- total: مبلغ نهایی پرداختی چاپ‌شده. اگر نبود 0.
+- currency: فقط اگر روی فیش صریحاً «ریال / Rials / IRR» نوشته شده "rial"؛ اگر صریحاً «تومان / Toman / IRT» نوشته شده "toman"؛ در غیر این صورت "unknown". از روی بزرگی عدد حدس نزن.
 - ردیف‌هایی مثل «جمع کل»، «قابل پرداخت»، «شماره سفارش» را به عنوان آیتم نیاور.
 - فقط JSON برگردان، هیچ توضیح اضافه‌ای نده."""
 
@@ -48,15 +48,14 @@ SCHEMA = {
     "required": ["items"],
 }
 
-# اگر مدل اصلی شلوغ/در دسترس نبود، به ترتیب این‌ها امتحان می‌شوند
 FALLBACK_MODELS = [
     "gemini-flash-lite-latest",
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
 ]
 
-REQUEST_TIMEOUT = 15   # ثانیه برای هر درخواست
-TOTAL_BUDGET = 45      # حداکثر کل زمان خواندن (تا تلگرام منتظر نماند)
+REQUEST_TIMEOUT = 15
+TOTAL_BUDGET = 45
 
 
 def _models():
@@ -98,8 +97,7 @@ def read_receipt(image_bytes, mime="image/jpeg"):
 
     payload = {
         "contents": [{"parts": [
-            {"inline_data": {"mime_type": mime,
-                             "data": base64.b64encode(image_bytes).decode()}},
+            {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
             {"text": PROMPT},
         ]}],
         "generationConfig": {
@@ -108,8 +106,7 @@ def read_receipt(image_bytes, mime="image/jpeg"):
             "responseSchema": SCHEMA,
         },
     }
-    headers = {"Content-Type": "application/json",
-               "x-goog-api-key": config.GEMINI_API_KEY}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": config.GEMINI_API_KEY}
 
     deadline = time.monotonic() + TOTAL_BUDGET
     last_code = None
@@ -121,8 +118,7 @@ def read_receipt(image_bytes, mime="image/jpeg"):
             if time.monotonic() > deadline:
                 break
             try:
-                r = requests.post(url, headers=headers,
-                                  json=payload, timeout=REQUEST_TIMEOUT)
+                r = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
             except requests.RequestException as e:
                 log.warning("OCR network error (%s): %s", model, e)
                 last_code = None
@@ -140,16 +136,16 @@ def read_receipt(image_bytes, mime="image/jpeg"):
                 return {"ok": False, "error": f"کلید Gemini نامعتبر است (کد {r.status_code})؛ GEMINI_API_KEY را در Render بررسی کن."}
             if r.status_code == 404:
                 log.warning("OCR model not found: %s", model)
-                break  # مدل بعدی
+                break
             if r.status_code == 429:
                 log.warning("OCR quota on %s", model)
-                break  # سهمیهٔ این مدل پر شده؛ مدل بعدی
+                break
             if r.status_code >= 500:
                 log.warning("OCR busy %s on %s", r.status_code, model)
                 if attempt == 0 and time.monotonic() + 3 < deadline:
                     time.sleep(3)
                     continue
-                break  # مدل بعدی
+                break
             break
         if data is not None:
             break
@@ -171,26 +167,38 @@ def read_receipt(image_bytes, mime="image/jpeg"):
         log.warning("OCR parse error: %s | %s", e, str(data)[:300])
         return {"ok": False, "error": "نتوانستم فیش را بخوانم؛ عکس واضح‌تر و کامل بفرست."}
 
-    items = []
+    # اعداد دقیقاً كما چاپ شده؛ تبدیل واحد فقط اینجا و فقط اگر فیش صریحاً ریالی باشد
+    printed = []
     for it in (raw.get("items") or [])[:config.OCR_MAX_ITEMS]:
         name = str(it.get("name", "")).strip()[:40]
         price = _norm_amount(it.get("price"))
         if not name or price <= 0:
             continue
-        items.append({"id": new_id(), "name": name,
-                     "price": price, "owners": []})
+        printed.append({"id": new_id(), "name": name, "price": price})
 
-    if not items:
+    if not printed:
         return {"ok": False, "error": "هیچ آیتمی روی فیش نخواندم؛ عکس واضح‌تر بفرست یا دستی وارد کن."}
 
-    note = ""
-    if str(raw.get("currency", "")).lower() in ("rial", "ریال"):
-        note = "💱 مبالغ فیش ریالی بود و به تومان تبدیل شد."
+    cur = str(raw.get("currency", "")).lower()
+    if cur in ("rial", "ریال"):
+        factor = 0.1
+        note = "💱 روی فیش «ریال» بود؛ مبالغ ÷۱۰ شد تا تومان شود. اگر اشتباه خواندم، با 💱 ×۱۰ / ÷۱۰ اصلاح کن."
+    elif cur in ("toman", "تومان"):
+        factor = 1
+        note = ""
+    else:
+        factor = 1
+        note = "💱 واحد فیش مشخص نبود؛ اعداد همان‌طور که چاپ شده آوردم (فرض: تومان). اگر یک صفر کم دارد 💱 ×۱۰ و اگر ریالی است 💱 ÷۱۰ را بزن."
+
+    items = [{"id": it["id"], "name": it["name"],
+              "price": max(1, int(round(it["price"] * factor))), "owners": []}
+             for it in printed]
+
     return {
         "ok": True,
         "items": items,
-        "extra": _norm_amount(raw.get("tax_and_service")),
-        "discount": _norm_amount(raw.get("discount")),
-        "total": _norm_amount(raw.get("total")) or None,
+        "extra": int(round(_norm_amount(raw.get("tax_and_service")) * factor)),
+        "discount": int(round(_norm_amount(raw.get("discount")) * factor)),
+        "total": int(round(_norm_amount(raw.get("total")) * factor)) or None,
         "note": note,
     }

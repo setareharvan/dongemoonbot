@@ -82,6 +82,7 @@ def ocr_review_kb(items):
         rows.append(
             [(f"🗑 {i}. {it['name']} — {money(it['price'])}", f"ocr:rm:{it['id']}")])
     rows.append([("➕ افزودن / اصلاح دستی", "ocr:add")])
+    rows.append([("💱 ×۱۰ (یک صفر کم دارد)", "ocr:x10"), ("💱 ÷۱۰ (یک صفر زیاد دارد)", "ocr:d10")])
     rows.append([("✅ درسته، ادامه", "ocr:ok"), ("❌ لغو", "x")])
     return ikb(rows)
 
