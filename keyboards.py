@@ -12,6 +12,11 @@ BTN_STATUS = "📋 وضعیت"
 BTN_CANCEL = "❌ لغو"
 
 
+def _short(s, n=24):
+    s = str(s)
+    return s if len(s) <= n else s[:n] + "…"
+
+
 def main_menu():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
     m.row(BTN_EXPENSE, BTN_PHOTO)
@@ -50,15 +55,15 @@ def mode_kb():
 
 
 def payer_kb(members):
-    rows = [[(f"👤 {m['name']}", f"pay:{m['id']}") for m in members[i:i + 2]]
+    rows = [[(f"👤 {_short(m['name'])}", f"pay:{m['id']}") for m in members[i:i + 2]]
             for i in range(0, len(members), 2)]
     rows.append([("❌ لغو", "x")])
     return ikb(rows)
 
 
 def members_kb(members):
-    rows = [[(f"👤 {m['name']}", "noop"), ("🗑 حذف", f"del:{m['id']}")]
-            for m in members]
+    rows = [[(f"👤 {_short(m['name'])}", "noop"),
+             ("🗑 حذف", f"del:{m['id']}")] for m in members]
     rows.append([("➕ افزودن عضو", "add")])
     return ikb(rows)
 
@@ -69,7 +74,7 @@ def select_kb(members, selected, prefix, all_cb, ok_cb):
         row = []
         for m in members[i:i + 2]:
             icon = "✅" if m["id"] in selected else "⬜"
-            row.append((f"{icon} {m['name']}", f"{prefix}:{m['id']}"))
+            row.append((f"{icon} {_short(m['name'])}", f"{prefix}:{m['id']}"))
         rows.append(row)
     rows.append([("👥 همه / هیچ", all_cb)])
     rows.append([("✅ ثبت", ok_cb), ("❌ لغو", "x")])
@@ -80,9 +85,10 @@ def ocr_review_kb(items):
     rows = []
     for i, it in enumerate(items, 1):
         rows.append(
-            [(f"🗑 {i}. {it['name']} — {money(it['price'])}", f"ocr:rm:{it['id']}")])
+            [(f"🗑 {i}. {_short(it['name'], 18)} — {money(it['price'])}", f"ocr:rm:{it['id']}")])
     rows.append([("➕ افزودن / اصلاح دستی", "ocr:add")])
-    rows.append([("💱 ×۱۰ (یک صفر کم دارد)", "ocr:x10"), ("💱 ÷۱۰ (یک صفر زیاد دارد)", "ocr:d10")])
+    rows.append([("💱 ×۱۰ (یک صفر کم دارد)", "ocr:x10"),
+                ("💱 ÷۱۰ (یک صفر زیاد دارد)", "ocr:d10")])
     rows.append([("✅ درسته، ادامه", "ocr:ok"), ("❌ لغو", "x")])
     return ikb(rows)
 
@@ -113,6 +119,6 @@ def expenses_kb(s):
     names = {m["id"]: m["name"] for m in s["members"]}
     rows = []
     for i, ex in enumerate(s["expenses"][-15:], 1):
-        label = f"✏️ {i}. {names.get(ex['payer'], '؟')} — {money(total_of(ex))}"
+        label = f"✏️ {i}. {_short(names.get(ex['payer'], '؟'), 12)} — {money(total_of(ex))}"
         rows.append([(label, f"ed:{ex['id']}"), ("🗑", f"rm:{ex['id']}")])
     return ikb(rows)
